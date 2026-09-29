@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from urllib.parse import urlsplit
 
 from zagros_builder import JOB_CONTRACT_VERSION
@@ -138,7 +139,32 @@ def validate_job_document(doc: object) -> dict:
             if not isinstance(entry.get(field), str):
                 raise JobValidationError(
                     f"job credential misses '{field}'")
+        if entry.get("kind") == "signing_key":
+            seed = entry["material"].get("seed")
+            if not isinstance(seed, str) or not _SEED_RE.fullmatch(seed):
+                raise JobValidationError(
+                    "job signing_key credential must carry a 43-char "
+                    "base64url (32-byte) 'seed' in its material")
     return doc
+
+
+# 32 raw bytes, base64url unpadded (43 chars) — the Ed25519 signing seed.
+_SEED_RE = re.compile(r"[A-Za-z0-9_-]{43}")
+
+
+def signing_seed(doc: dict) -> str | None:
+    """The job's app-attestation signing seed, when the panel attached one.
+
+    The panel only attaches it for builds of an application with an ACTIVE
+    signing key, and only on the job-token-authenticated fetch; the worker
+    stages it as a 0600 file and the build tool deletes it after consuming.
+    """
+    for entry in doc.get("credentials", []):
+        if isinstance(entry, dict) and entry.get("kind") == "signing_key":
+            seed = (entry.get("material") or {}).get("seed")
+            if isinstance(seed, str) and _SEED_RE.fullmatch(seed):
+                return seed
+    return None
 
 
 def validate_icon_pack(data: object, ref: object) -> bytes:

@@ -6,6 +6,7 @@ import pytest
 from conftest import config_digest
 from zagros_builder.jobs import (
     JobValidationError,
+    signing_seed,
     ssh_credentials,
     validate_icon_pack,
     validate_job_document,
@@ -171,3 +172,45 @@ def test_icon_pack_rejects_empty_nonzip_and_drift():
     # refs without hashes still enforce the zip shape
     assert validate_icon_pack(blob, {"present": True}) == blob
     assert validate_icon_pack(blob, None) == blob
+
+
+_SEED = "A" * 43  # 32 bytes, base64url unpadded
+
+
+def _signing_cred(seed=_SEED):
+    return {"public_id": "b1-app-signing", "kind": "signing_key",
+            "label": "application attestation seed (per-job)",
+            "material": {"seed": seed}}
+
+
+def test_document_accepts_wellformed_signing_seed():
+    doc = _doc(credentials=[_signing_cred()])
+    assert validate_job_document(doc)["build_public_id"] == "b1"
+    assert signing_seed(doc) == _SEED
+
+
+def test_document_rejects_malformed_signing_seed():
+    for bad in ("short", "A" * 42, "A" * 44, "A" * 43 + "=", "A" * 42 + "/",
+                None, 12345):
+        with pytest.raises(JobValidationError, match="signing_key"):
+            validate_job_document(_doc(credentials=[_signing_cred(seed=bad)]))
+
+
+def test_document_rejects_signing_key_without_seed_field():
+    with pytest.raises(JobValidationError, match="signing_key"):
+        validate_job_document(_doc(credentials=[
+            {"public_id": "c", "kind": "signing_key",
+             "label": "x", "material": {"key": "k"}}]))
+
+
+def test_signing_seed_absent_or_ignored_for_other_kinds():
+    assert signing_seed(_doc()) is None
+    doc = _doc(credentials=[{"public_id": "c", "kind": "ssh_password",
+                             "label": "vps", "material": {"seed": _SEED}}])
+    assert validate_job_document(doc)
+    assert signing_seed(doc) is None
+
+
+def test_signing_seed_ignores_malformed_entry_without_validation():
+    doc = _doc(credentials=[_signing_cred(seed="bogus")])
+    assert signing_seed(doc) is None

@@ -8,7 +8,7 @@ panel code; the two sides meet only through the versioned job contract
 """
 from __future__ import annotations
 
-BUILDER_VERSION = "0.2.0"
+BUILDER_VERSION = "0.3.0"
 # v2 (Phase 14): the job document carries a pinned ``sdk_source`` next to
 # ``source``. Bump together with the panel — a v1 document (no SDK pin)
 # must be refused loudly, never built into a pub-get failure.

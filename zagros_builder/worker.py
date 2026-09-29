@@ -29,6 +29,7 @@ from zagros_builder.gitops import CloneError, GitOps, create_workspace
 from zagros_builder.jobs import (
     BUILD_ENTRY_SCRIPT,
     JobValidationError,
+    signing_seed,
     ssh_credentials,
     validate_icon_pack,
     validate_job_document,
@@ -311,6 +312,25 @@ def run_build(payload: dict, *, panel: PanelClient | None = None,
             extra_args = ["--icon-pack", pack_path]
             _log_line(f"launcher icon pack staged at {pack_path}")
 
+        # App-attestation seed (f-panel-8): when the panel attached the
+        # application's signing seed to this job, stage it as a 0600 file
+        # in the job workspace and hand the build tool a PATH — the value
+        # itself never appears in argv, env, or any log line.
+        seed = signing_seed(job_doc)
+        seed_path: str | None = None
+        if seed:
+            seed_name = ".app_attestation_seed"
+            seed_path = (f"{workdir}/{seed_name}" if not executor.is_local
+                         else str(local_root / seed_name))
+            gitops.write_text_file(seed_path, seed + "\n")
+            try:
+                executor.run(["chmod", "600", seed_path], timeout=60)
+            except Exception:  # noqa: BLE001 — hardening is best-effort
+                pass
+            extra_args = extra_args + ["--signing-seed-file", seed_path]
+            _log_line("app attestation seed staged for the build "
+                      "(value never logged)")
+
         script_rel = BUILD_ENTRY_SCRIPT
         script_path = f"{src_dir}/{script_rel}"
         if not executor.exists(script_path):
@@ -337,6 +357,16 @@ def run_build(payload: dict, *, panel: PanelClient | None = None,
                 output=splitter.feed)
         finally:
             splitter.flush()
+            if seed_path is not None:
+                # The build tool deletes the seed file itself; this covers
+                # any earlier exit so the secret never outlives the job.
+                try:
+                    if executor.is_local:
+                        Path(seed_path).unlink(missing_ok=True)
+                    else:
+                        executor.run(["rm", "-f", seed_path], timeout=60)
+                except Exception:  # noqa: BLE001 — best-effort cleanup
+                    pass
         if result.returncode != 0:
             tail = (result.stderr or result.stdout).decode(
                 "utf-8", "replace").strip().splitlines()[-20:]
