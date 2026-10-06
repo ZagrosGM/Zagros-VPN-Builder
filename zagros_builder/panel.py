@@ -33,9 +33,19 @@ class PanelClient:
         self._job_token = job_token
         self._worker_id = worker_id
         self._worker_token = worker_token
+        verify: object = True
+        ca_bundle = (os.environ.get("ZAGROS_PANEL_CA_BUNDLE") or "").strip()
+        if ca_bundle:
+            # Private-CA deployments: the panel serves a cert the public
+            # stores cannot verify; point httpx at the deployment's CA file.
+            if not Path(ca_bundle).is_file():
+                raise PanelError(
+                    f"ZAGROS_PANEL_CA_BUNDLE points at a missing file: "
+                    f"{ca_bundle}", error_code="config_invalid")
+            verify = ca_bundle
         self._client = httpx.Client(
             base_url=self._base_url, timeout=timeout,
-            transport=transport,
+            transport=transport, verify=verify,
             headers={"User-Agent": _USER_AGENT})
 
     @classmethod

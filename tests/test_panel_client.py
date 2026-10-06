@@ -5,6 +5,8 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from pathlib import Path
+
 import pytest
 
 from zagros_builder.panel import PanelClient, PanelError
@@ -269,3 +271,30 @@ def test_fetch_icon_pack_maps_404(stub):
         assert exc_info.value.status_code == 404
     finally:
         client.close()
+
+
+def test_ca_bundle_missing_file_fails_loudly(monkeypatch, tmp_path):
+    monkeypatch.setenv("ZAGROS_PANEL_URL", "https://127.0.0.1:8443")
+    monkeypatch.setenv("ZAGROS_WORKER_ID", "w")
+    monkeypatch.setenv("ZAGROS_WORKER_API_TOKEN", "t")
+    monkeypatch.setenv("ZAGROS_PANEL_CA_BUNDLE",
+                       str(tmp_path / "missing.pem"))
+    with pytest.raises(PanelError, match="missing file"):
+        PanelClient.from_env(job_token="j")
+
+
+def test_ca_bundle_present_builds_client(monkeypatch, tmp_path):
+    import httpx
+
+    monkeypatch.setenv("ZAGROS_PANEL_URL", "http://127.0.0.1:8000")
+    monkeypatch.setenv("ZAGROS_WORKER_ID", "w")
+    monkeypatch.setenv("ZAGROS_WORKER_API_TOKEN", "t")
+    import certifi
+
+    # httpx validates the bundle at client construction — use a real PEM
+    # bundle (certifi ships one) so construction succeeds.
+    bundle = tmp_path / "ca.pem"
+    bundle.write_bytes(Path(certifi.where()).read_bytes())
+    monkeypatch.setenv("ZAGROS_PANEL_CA_BUNDLE", str(bundle))
+    client = PanelClient.from_env(job_token="j")
+    client.close()
