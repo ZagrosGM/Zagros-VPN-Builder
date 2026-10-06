@@ -50,6 +50,45 @@ def cmd_enroll(args: argparse.Namespace) -> int:
     return 0
 
 
+def _start_heartbeat(args: argparse.Namespace, queues: list) -> None:
+    """Keep build_workers.last_seen_at fresh (f-builder-9).
+
+    The rq queue path does not touch the panel, so the dashboard would
+    otherwise never see worker liveness. A daemon thread posts the
+    worker heartbeat on an interval; failures are non-fatal (the panel
+    route simply marks the worker stale) and are logged once.
+    """
+    import threading
+    import time
+
+    from zagros_builder.panel import PanelClient, PanelError
+
+    interval = 30
+    token = Path(args.token_file).read_text(encoding="utf-8").strip()
+    client = PanelClient(
+        args.panel_url, worker_id=args.worker_id, worker_token=token)
+    labels = ",".join(q.name for q in queues)
+
+    def _loop() -> None:
+        failures = 0
+        while True:
+            time.sleep(interval)
+            try:
+                client.heartbeat()
+                failures = 0
+            except Exception as exc:  # noqa: BLE001 - liveness only
+                failures += 1
+                if failures == 1:
+                    print(f"heartbeat to {args.panel_url} failed: {exc}",
+                          file=sys.stderr, flush=True)
+
+    thread = threading.Thread(target=_loop, name="builder-heartbeat",
+                              daemon=True)
+    thread.start()
+    print(f"heartbeat thread started ({interval}s, {labels})",
+          flush=True)
+
+
 def cmd_listen(args: argparse.Namespace) -> int:
     try:
         from rq import Queue, SimpleWorker, Worker
@@ -84,6 +123,7 @@ def cmd_listen(args: argparse.Namespace) -> int:
     worker_cls = SimpleWorker if args.burst else Worker
     worker = worker_cls(queues, connection=connection,
                         name=f"zagros-builder-{args.worker_id}")
+    _start_heartbeat(args, queues)
     print(f"listening as '{args.worker_id}' on "
           f"{', '.join(q.name for q in queues)}"
           f"{' (burst: exit when drained)' if args.burst else ''}")
