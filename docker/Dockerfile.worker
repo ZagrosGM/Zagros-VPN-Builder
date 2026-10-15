@@ -1,0 +1,51 @@
+# Zagros build worker image — the zero-touch compose-managed builder
+# (f-buildzero-1). Ships the full Android/Linux AOT toolchain so a fresh
+# panel install can build white-label apps without any host provisioning:
+# apt toolchain + pinned Flutter + Android cmdline-tools (licenses accepted,
+# platform-tools; NDK/build-tools are auto-installed by Gradle) + the
+# zagros_builder agent. Runs with network_mode: host next to the panel.
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates curl file git openssh-client unzip xz-utils \
+      openjdk-17-jdk-headless python3 python3-venv python3-pip \
+ && rm -rf /var/lib/apt/lists/*
+
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+
+# Pinned Flutter (stable line) — warm the Dart SDK cache at build time.
+ARG FLUTTER_VERSION=3.47.7
+RUN git clone --depth 1 -b "${FLUTTER_VERSION}" \
+      https://github.com/flutter/flutter.git /opt/flutter \
+ && git config --global --add safe.directory /opt/flutter \
+ && /opt/flutter/bin/flutter config --no-analytics --no-cli-animations \
+ && /opt/flutter/bin/flutter --version
+ENV PATH=/opt/flutter/bin:/usr/local/bin:${PATH}
+ENV PUB_CACHE=/opt/pub-cache
+
+# Android SDK: pinned cmdline-tools + accepted licenses + platform-tools.
+ARG CMDTOOLS_BUILD=11076708
+RUN mkdir -p /opt/android-sdk/cmdline-tools \
+ && curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-${CMDTOOLS_BUILD}_latest.zip" \
+      -o /tmp/cmdtools.zip \
+ && unzip -q /tmp/cmdtools.zip -d /opt/android-sdk/cmdline-tools \
+ && mv /opt/android-sdk/cmdline-tools/cmdline-tools /opt/android-sdk/cmdline-tools/latest \
+ && rm /tmp/cmdtools.zip
+ENV ANDROID_SDK_ROOT=/opt/android-sdk
+ENV ANDROID_HOME=/opt/android-sdk
+RUN yes | /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null \
+ && /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager platform-tools >/dev/null
+
+# The builder agent itself (repo checkout kept whole: `python -m` layout).
+COPY . /opt/zagros-builder
+COPY docker/worker-entrypoint.sh /usr/local/bin/worker-entrypoint
+RUN python3 -m venv /opt/worker-venv \
+ && /opt/worker-venv/bin/pip install --no-cache-dir \
+      -r /opt/zagros-builder/requirements.txt \
+ && chmod 0755 /usr/local/bin/worker-entrypoint
+
+WORKDIR /opt/zagros-builder
+ENV ZAGROS_BUILD_WORKSPACE=/var/lib/zagros/build-worker/workspace
+ENTRYPOINT ["/usr/local/bin/worker-entrypoint"]
