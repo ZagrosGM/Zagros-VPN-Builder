@@ -5,7 +5,30 @@
 set -u
 
 PANEL="${ZAGROS_PANEL_URL:-}"
-[ -n "$PANEL" ] || { echo "worker: ZAGROS_PANEL_URL is required" >&2; exit 78; }
+# f-buildzero-1: derive the loopback panel URL from the mounted .env —
+# the same TLS auto rule the compose healthcheck uses (auto = TLS when
+# both cert files are set). Keeps the worker in sync with config edits.
+if [ -z "$PANEL" ] && [ -r /code/.env ]; then
+    PANEL=$("/opt/worker-venv/bin/python" - <<'PY'
+import urllib.request
+
+settings = {}
+for line in open("/code/.env", encoding="utf-8"):
+    line = line.strip()
+    if "=" in line and not line.startswith("#"):
+        k, _, v = line.partition("=")
+        settings[k.strip()] = v.strip().strip('"').strip("'")
+
+port = str(int(settings.get("UVICORN_PORT", "8000")))
+mode = settings.get("TLS_MODE", "auto")
+tls = (mode == "on"
+       or (mode == "auto" and bool(settings.get("UVICORN_SSL_CERTFILE"))
+           and bool(settings.get("UVICORN_SSL_KEYFILE"))))
+print(f"{'https' if tls else 'http'}://127.0.0.1:{port}")
+PY
+)
+fi
+[ -n "$PANEL" ] || { echo "worker: no panel URL (set ZAGROS_PANEL_URL or mount /code/.env)" >&2; exit 78; }
 WORKER_ID="${ZAGROS_WORKER_ID:-local-pool-01}"
 LABELS="${ZAGROS_WORKER_LABELS:-linux}"
 REDIS="${ZAGROS_REDIS_URL:-redis://127.0.0.1:6379/0}"
