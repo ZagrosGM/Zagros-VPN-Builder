@@ -10,7 +10,7 @@ PANEL="${ZAGROS_PANEL_URL:-}"
 # both cert files are set). Keeps the worker in sync with config edits.
 if [ -z "$PANEL" ] && [ -r /code/.env ]; then
     PANEL=$("/opt/worker-venv/bin/python" - <<'PY'
-import urllib.request
+import urllib.request  # noqa: F401 - keep the heredoc import-light
 
 settings = {}
 for line in open("/code/.env", encoding="utf-8"):
@@ -24,9 +24,26 @@ mode = settings.get("TLS_MODE", "auto")
 tls = (mode == "on"
        or (mode == "auto" and bool(settings.get("UVICORN_SSL_CERTFILE"))
            and bool(settings.get("UVICORN_SSL_KEYFILE"))))
-print(f"{'https' if tls else 'http'}://127.0.0.1:{port}")
+if tls:
+    # The certificate covers the deployment DOMAIN, never 127.0.0.1 — talk
+    # to the domain name and pin it to loopback in /etc/hosts (host network
+    # makes 127.0.0.1 the host) so no DNS dependency is introduced.
+    domain = (settings.get("DOMAIN")
+              or settings.get("PANEL_BASE_URL", "").split("//")[-1]
+                                                 .split("/")[0].split(":")[0])
+    print(f"https://{domain}:{port}" if domain else f"https://127.0.0.1:{port}")
+else:
+    print(f"http://127.0.0.1:{port}")
 PY
 )
+    case "$PANEL" in
+        https://127.0.0.1:*|http://*) ;;  # no name to pin
+        *)
+            host="${PANEL#https://}"; host="${host%%:*}"
+            grep -qE "(^|[[:space:]])$host([[:space:]]|\$)" /etc/hosts 2>/dev/null \
+                || echo "127.0.0.1 $host" >> /etc/hosts
+            ;;
+    esac
 fi
 [ -n "$PANEL" ] || { echo "worker: no panel URL (set ZAGROS_PANEL_URL or mount /code/.env)" >&2; exit 78; }
 WORKER_ID="${ZAGROS_WORKER_ID:-local-pool-01}"
